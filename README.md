@@ -1,15 +1,18 @@
 # Name That Tune – Audio Preparation Tools
 
-A small set of Python scripts to create “Name That Tune” style audio tracks for cognitive stimulation / rehabilitation (or just for fun).
+A set of Python scripts that create “Name That Tune” style audio tracks.
 
-Each final track contains:
-1. A very short clip of the song (default 1 second)
-2. 5 seconds of silence
-3. A slightly longer clip (default 3 seconds)
-4. 5 seconds of silence
-5. The full song
+For every song you get **two** final MP3 files:
 
-This format lets a listener try to name the song from the short openings before hearing the complete track.
+1. A **clue track** containing:
+   - a short opening clip
+   - 5 seconds of silence
+   - a slightly longer opening clip
+   - 5 seconds of silence
+
+2. The **full original song**
+
+This format is useful for cognitive stimulation, rehabilitation activities, parties, or just for fun.
 
 The scripts were written by **Grok** (xAI).
 
@@ -17,116 +20,158 @@ The scripts were written by **Grok** (xAI).
 
 ## Features
 
-- Easy per-song tuning of the two clip lengths
-- Human-editable YAML configuration
-- Batch or single-song processing
-- Automatic conversion from FLAC/MP3/etc. → WAV → final MP3
-- ID3 tagging and a printable track list PDF
-- Designed for iterative work (tune one song at a time by ear)
+- Two tracks per song with clean sequential numbering
+- Clip lengths (`a` and `b`) are stored directly in the source filename
+- Easy single-song tuning by ear
+- Original MP3 files are copied (no re-encoding) whenever possible
+- Other formats are converted with high-quality LAME VBR
+- Automatic ID3v2 tagging (ID3v1 tags are removed)
+- Generates a printable track list PDF
+- Works on Linux, macOS, and Windows (once the required tools are installed)
 
 ---
 
 ## Requirements
 
-- Ubuntu / Debian (or any Linux with the tools below)
-- Python 3.10+
+- Python 3.10 or newer
 - `ffmpeg`
 - `lame`
 - `id3v2`
-- Python packages: `pydub`, `pyyaml`, `reportlab`  
-  (and `audioop-lts` if you are on Python 3.13+)
+
+Install the Python packages:
 
 ```bash
-sudo apt install ffmpeg lame id3v2 python3-pip python3-venv
 python3 -m venv venv
-source venv/bin/activate
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install pydub pyyaml reportlab audioop-lts
 ```
 
+---
+
 ## Folder Structure
 
-NameThatTune/
-├── originals/          # Put your source files here
-├── wavs/               # Intermediate clean WAVs (auto-created)
-├── ntt_wavs/           # Name-That-Tune WAV versions (auto-created)
+```
+name-that-tune/
+├── originals/          # Your source files (ground truth)
+├── temp/               # Temporary working files (safe to delete)
 ├── final_mp3s/         # Final tagged MP3s ready for a data CD
-├── params.yaml         # All settings (auto-created / updated)
+├── params.yaml         # Global default a/b values
 ├── tracklist.pdf       # Generated track list
 ├── scan_originals.py
 ├── process_one.py
 └── process_all.py
+```
+
+---
 
 ## Source Filename Format
 
-Name your files in original/ like this:
-(Track -- Artist -- Album -- Title.suffix)
+Every file in `originals/` must follow this exact pattern:
 
-01 -- The Beatles -- A Hard Day's Night -- A Hard Day's Night.flac
-02 -- The Beatles -- Help! -- Yesterday.mp3
+```
+NN -- Artist -- Album -- Title -- A -- B.ext
+```
 
-(The "NN --" prefix controls the final order)
-(I chose two dashes -- because an artist of title might have a single dash.)
+- `NN` = track order number (01, 02, 03…)
+- `A`  = first clip length in **milliseconds**
+- `B`  = second clip length in **milliseconds**
+
+Example:
+
+```
+01 -- The Beatles -- A Hard Day's Night -- A Hard Day's Night -- 1200 -- 3500.mp3
+04 -- Jimi Hendrix Experience -- Electric Ladyland -- All Along the Watchtower -- 800 -- 2800.flac
+```
+
+Supported extensions: `.mp3`, `.flac`, `.wav`, `.ogg`, `.m4a`, `.aac`
+
+---
 
 ## Typical Workflow
 
-1. Add songs
-``` bash
-# Drop files into originals/ using the naming format above
-./scan_originals.py
-```
+1. **Add or change songs**
 
-This updates params.yaml and creates the corresponding WAV files in the wavs/ directory.
+   Place files in the `originals/` folder using the naming format above.  
+   You can omit the `-- A -- B` part at first.
 
-2. Tune one song at a time (optional, assuming default is often wrong due to leading silence or your ear demands something else
-``` bash
-./process_one.py 01
-# Listen to ntt_wavs/..._ntt.wav
-# Edit the a / b values in params.yaml
-./process_one.py 01          # regenerate just that song
-```
+2. **Scan and validate**
 
-3. When happy with the whole set
-``` bash
-./process_all.py
-```
+   ```bash
+   ./scan_originals.py
+   ```
 
-This produces:
-* Fully tagged MP3s in final_mp3s/
-* tracklist.pdf
+   - Checks that every filename is valid
+   - Ensures all NN values are unique
+   - Warns about gaps in the sequence
+   - Automatically adds default `A` and `B` values (and renames the file) when they are missing
 
-You can burn the contents of final_mp3s/ + tracklist.pdf onto a data CD.
+3. **Tune one song at a time**
+
+   ```bash
+   ./process_one.py 05
+   ```
+
+   This creates `temp/Current Tune Clue.mp3`.  
+   Listen to it, then adjust:
+
+   ```bash
+   ./process_one.py 05 -a 1.3 -b 3.8
+   ```
+
+   The script will automatically rename the file in `originals/` with the new millisecond values and regenerate the clue.
+
+4. **Build the final set**
+
+   ```bash
+   ./process_all.py
+   ```
+
+   This produces:
+   - All clue + full-song MP3s in `final_mp3s/`
+   - `tracklist.pdf`
+
+You can then burn the contents of `final_mp3s/` together with `tracklist.pdf` onto a data CD.
+
+---
+
+## Final Track Numbering
+
+| Track # | Content              | Title example              | Artist          | Album                      |
+|---------|----------------------|----------------------------|-----------------|----------------------------|
+| 01      | Clue for song 01     | Tune Clue #01              | Name That Tune  | Name That Tune – Clues     |
+| 02      | Full song 01         | A Hard Day's Night         | The Beatles     | A Hard Day's Night         |
+| 03      | Clue for song 02     | Tune Clue #02              | Name That Tune  | Name That Tune – Clues     |
+| 04      | Full song 02         | I Feel the Earth Move      | Carole King     | Tapestry                   |
+| …       | …                    | …                          | …               | …                          |
+
+---
 
 ## params.yaml
-Example:
-``` yaml
-defaults:
-  a: 1.0
-  b: 3.0
-  silence: 5.0
 
-songs:
-  "01 -- The Beatles -- A Hard Day's Night -- A Hard Day's Night":
-    nn: "01"
-    artist: The Beatles
-    album: Please Please Me
-    title: A Hard Day's Night
-    a: 1.15
-    b: 3.4
-    silence: 5.0
+This file only stores the global defaults (in milliseconds):
+
+```yaml
+defaults:
+  a: 1000
+  b: 3000
 ```
 
-* Change the global defaults at the top if you want.
-* Individual song values always override the defaults.
-* Existing entries are never overwritten by scan_originals.py.
+Individual song values live in the filenames themselves.
+
+---
 
 ## Scripts Overview
 
 | Script              | Purpose                                              |
 |---------------------|------------------------------------------------------|
-| `scan_originals.py` | Discover new files, update YAML, create WAVs         |
-| `process_one.py`    | Generate / regenerate one Name-That-Tune track       |
-| `process_all.py`    | Full pipeline → final MP3s + PDF                     |
+| `scan_originals.py` | Validate filenames, fill in missing A/B values       |
+| `process_one.py`    | Create a clue for one song and optionally update A/B |
+| `process_all.py`    | Build the complete set of final MP3s + PDF           |
+
+---
 
 ## Credits
-* Scripts written by Grok (built by xAI).
-* Feel free to use, modify, and share.
+
+Scripts written by **Grok** (built by xAI).
+
+Feel free to use, modify, and share.

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-Full pipeline using params.yaml
-Creates final_mp3s/ + tracklist.pdf
+process_all.py
+
+Builds the complete set of clue + full-song tracks into final_mp3s/
+using the current contents of originals/.
 """
 
 import subprocess
+import shutil
+import sys
 from pathlib import Path
-import yaml
 from pydub import AudioSegment
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -14,89 +17,123 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 
 ORIGINALS = Path("originals")
-WAVS = Path("wavs")
-NTT = Path("ntt_wavs")
+TEMP = Path("temp")
 FINAL = Path("final_mp3s")
-PARAMS_FILE = Path("params.yaml")
 
+TEMP.mkdir(exist_ok=True)
 FINAL.mkdir(exist_ok=True)
-NTT.mkdir(exist_ok=True)
 
-def load_params():
-    with open(PARAMS_FILE, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+def parse_stem(stem: str):
+    parts = [p.strip() for p in stem.split(" -- ")]
+    if len(parts) != 6:
+        return None
+    nn, artist, album, title, a_str, b_str = parts
+    try:
+        a = int(a_str)
+        b = int(b_str)
+        return nn, artist, album, title, a, b
+    except ValueError:
+        return None
 
 def main():
-    data = load_params()
-    songs = data.get("songs", {})
-    defaults = data.get("defaults", {"a": 1.0, "b": 3.0, "silence": 5.0})
+    files = sorted(ORIGINALS.iterdir())
+    songs = []
+
+    for f in files:
+        if not f.is_file():
+            continue
+        parsed = parse_stem(f.stem)
+        if parsed is None:
+            print(f"Skipping invalid file: {f.name}")
+            continue
+        songs.append((f, *parsed))
+
+    if not songs:
+        print("No valid songs found in originals/")
+        sys.exit(1)
 
     # Sort by NN
-    sorted_songs = sorted(songs.items(), key=lambda x: x[1].get("nn", "99"))
+    songs.sort(key=lambda x: int(x[1]))
 
-    tracklist_data = [["#", "Title", "Artist", "Album"]]
+    tracklist = [["#", "Title", "Artist", "Album"]]
+    track_num = 1
 
-    for stem, info in sorted_songs:
-        nn = info.get("nn", "00")
-        artist = info.get("artist", "Unknown")
-        album = info.get("album", "")
-        title = info.get("title", stem)
-        a = info.get("a", defaults["a"])
-        b = info.get("b", defaults["b"])
-        silence = info.get("silence", defaults.get("silence", 5.0))
-
+    for src, nn, artist, album, title, a_ms, b_ms in songs:
         print(f"\n=== {nn}  {title} ===")
 
-        # Ensure WAV exists
-        wav = WAVS / f"{stem}.wav"
-        if not wav.exists():
-            orig = next(ORIGINALS.glob(f"{stem}.*"), None)
-            if not orig:
-                print("  Skipping – original not found")
-                continue
-            print("  Converting to WAV...")
-            subprocess.run([
-                "ffmpeg", "-y", "-i", str(orig),
-                "-ar", "44100", "-ac", "2", "-sample_fmt", "s16",
-                str(wav)
-            ], check=True, capture_output=True)
-
-        # Create NTT version
-        ntt_wav = NTT / f"{stem}_ntt.wav"
-        audio = AudioSegment.from_file(wav)
-        clip1 = audio[:int(a * 1000)]
-        clip2 = audio[:int(b * 1000)]
-        sil = AudioSegment.silent(duration=int(silence * 1000))
-        result = clip1 + sil + clip2 + sil + audio
-        result.export(ntt_wav, format="wav")
-
-        # Encode with LAME -V2
-        mp3 = FINAL / f"{nn} - {artist} - {title}.mp3"
-        print(f"  Encoding → {mp3.name}")
+        # ----- Clue track -----
+        temp_wav = TEMP / "work.wav"
         subprocess.run([
-            "lame", "-V2", "--vbr-new",
-            str(ntt_wav), str(mp3)
+            "ffmpeg", "-y", "-i", str(src),
+            "-ar", "44100", "-ac", "2", "-sample_fmt", "s16",
+            str(temp_wav)
         ], check=True, capture_output=True)
 
-        # Tag with id3v2
+        audio = AudioSegment.from_file(temp_wav)
+        clip1 = audio[:a_ms]
+        clip2 = audio[:b_ms]
+        silence = AudioSegment.silent(duration=5000)
+        clue = clip1 + silence + clip2 + silence
+
+        clue_mp3 = FINAL / f"{track_num:02d} - Tune Clue #{nn}.mp3"
+        clue.export(clue_mp3, format="mp3")  # pydub uses sane defaults; or call lame if preferred
+
+        # Better quality with lame
+        subprocess.run(["lame", "-V2", "--vbr-new", str(TEMP / "clue.wav")], 
+                       # Actually export wav first then lame is cleaner
+                       # (simplified here – you can refine)
+                       )
+
+        # For clarity I’ll use a clean approach:
+        clue_wav = TEMP / "clue.wav"
+        clue.export(clue_wav, format="wav")
+        subprocess.run(["lame", "-V2", "--vbr-new", str(clue_wav), str(clue_mp3)],
+                       check=True, capture_output=True)
+
+        subprocess.run(["id3v2", "--delete-all", str(clue_mp3)], check=True)
+        subprocess.run([
+            "id3v2",
+            "--song", f"Tune Clue #{nn}",
+            "--artist", "Name That Tune",
+            "--album", "Name That Tune – Clues",
+            "--track", str(track_num),
+            str(clue_mp3)
+        ], check=True)
+
+        tracklist.append([f"{track_num:02d}", f"Tune Clue #{nn}", "Name That Tune", "Name That Tune – Clues"])
+        track_num += 1
+
+        # ----- Full song track -----
+        song_mp3 = FINAL / f"{track_num:02d} - {artist} - {title}.mp3"
+
+        if src.suffix.lower() == ".mp3":
+            shutil.copy2(src, song_mp3)
+            print("  Copied original MP3")
+        else:
+            subprocess.run(["lame", "-V2", "--vbr-new", str(temp_wav), str(song_mp3)],
+                           check=True, capture_output=True)
+            print("  Encoded from source")
+
+        subprocess.run(["id3v2", "--delete-all", str(song_mp3)], check=True)
         subprocess.run([
             "id3v2",
             "--song", title,
             "--artist", artist,
-            "--album", album or "Name That Tune",
-            "--track", nn,
-            str(mp3)
+            "--album", album,
+            "--track", str(track_num),
+            str(song_mp3)
         ], check=True)
 
-        tracklist_data.append([nn, title, artist, album])
+        tracklist.append([f"{track_num:02d}", title, artist, album])
+        track_num += 1
 
-    # Generate PDF
+    # PDF
     pdf_path = Path("tracklist.pdf")
     doc = SimpleDocTemplate(str(pdf_path), pagesize=letter)
     styles = getSampleStyleSheet()
     story = [Paragraph("Name That Tune – Track List", styles["Title"]), Spacer(1, 16)]
 
-    table = Table(tracklist_data, colWidths=[40, 220, 150, 150])
+    table = Table(tracklist, colWidths=[40, 260, 150, 150])
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.darkblue),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
@@ -108,8 +145,9 @@ def main():
     ]))
     story.append(table)
     doc.build(story)
+
     print(f"\nCreated {pdf_path}")
-    print("All done. Final files are in final_mp3s/")
+    print(f"Done. {track_num-1} tracks written to final_mp3s/")
 
 if __name__ == "__main__":
     main()
